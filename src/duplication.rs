@@ -417,7 +417,7 @@ impl DesktopDuplicationApi {
     }
 
     fn draw_cursor(&mut self, tex: &Texture) -> Result<()> {
-        debug!("drawing cursor");
+        trace!("drawing cursor");
         let mut cursor_info = CURSORINFO {
             cbSize: size_of::<CURSORINFO>() as u32,
             ..Default::default()

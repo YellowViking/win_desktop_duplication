@@ -55,7 +55,7 @@ impl Texture {
 
 /// Describes a texture's basic properties.
 #[repr(C)]
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq, Debug)]
 pub struct TextureDesc {
     pub height: u32,
     pub width: u32,
