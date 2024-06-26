@@ -5,7 +5,6 @@
 //! For more information on how to use check [DesktopDuplicationApi]
 
 use std::mem::size_of;
-use std::ptr::null;
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -473,10 +472,10 @@ impl DesktopDuplicationApi {
         }
 
         if !icon_info.hbmMask.is_invalid() {
-            unsafe { DeleteObject(icon_info.hbmMask); }
+            unsafe { let _ = DeleteObject(icon_info.hbmMask); }
         }
         if !icon_info.hbmColor.is_invalid() {
-            unsafe { DeleteObject(icon_info.hbmColor); }
+            unsafe { let _ = DeleteObject(icon_info.hbmColor); }
         }
 
         Ok(POINT { x: icon_info.xHotspot as _, y: icon_info.yHotspot as _ })

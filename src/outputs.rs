@@ -7,14 +7,13 @@ use std::cmp::max;
 use std::ffi::CString;
 use std::mem::{size_of, swap};
 use std::pin::Pin;
-use std::ptr::{null, null_mut};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::task::{Context, Poll, Waker};
 use std::thread::spawn;
 
 use futures::Stream;
 use log::{error, trace};
-use windows::core::{PCSTR, Result as WinResult};
+use windows::core::{PCSTR};
 use windows::Win32::Graphics::Dxgi::{DXGI_MODE_DESC1, DXGI_OUTPUT_DESC1, IDXGIOutput6};
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R8G8B8A8_UNORM};
 use windows::Win32::Graphics::Gdi::{CDS_TYPE, ChangeDisplaySettingsExA, DEVMODE_DISPLAY_ORIENTATION, DEVMODEA, DISP_CHANGE_SUCCESSFUL, DM_BITSPERPEL, DM_DISPLAYFREQUENCY, DM_DISPLAYORIENTATION, DM_PELSHEIGHT, DM_PELSWIDTH, ENUM_CURRENT_SETTINGS, ENUM_DISPLAY_SETTINGS_FLAGS, EnumDisplaySettingsExA};
@@ -165,9 +164,7 @@ impl Display {
         }
         display_mode.dmBitsPerPel = if mode.hdr { 64 } else { 32 };
         display_mode.dmDisplayFrequency = mode.refresh_num / mode.refresh_den;
-        unsafe {
-            display_mode.Anonymous1.Anonymous2.dmDisplayOrientation = mode.orientation.into();
-        }
+        display_mode.Anonymous1.Anonymous2.dmDisplayOrientation = mode.orientation.into();
 
         display_mode.dmFields |= DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY | DM_BITSPERPEL | DM_DISPLAYORIENTATION;
 

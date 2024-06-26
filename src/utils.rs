@@ -18,7 +18,7 @@ pub fn convert_u16_to_string(data: &[u16]) -> String {
 
 pub fn set_process_dpi_awareness() {
     unsafe {
-        SetProcessDpiAwarenessContext(
+        let _ = SetProcessDpiAwarenessContext(
             DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
         );
     }
