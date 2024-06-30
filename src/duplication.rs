@@ -11,10 +11,11 @@ use futures::StreamExt;
 use log::{debug, error, trace, warn};
 use windows::core::Interface;
 use windows::core::Result as WinResult;
+use windows::Win32::Foundation;
 use windows::Win32::Foundation::{BOOL, E_ACCESSDENIED, E_INVALIDARG, GENERIC_READ, GetLastError, POINT};
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL, D3D_FEATURE_LEVEL_11_1};
 use windows::Win32::Graphics::Direct3D11::{D3D11_BIND_FLAG, D3D11_BIND_RENDER_TARGET, D3D11_CREATE_DEVICE_FLAG, D3D11_RESOURCE_MISC_FLAG, D3D11_RESOURCE_MISC_GDI_COMPATIBLE, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE, D3D11_USAGE_DEFAULT, D3D11CreateDevice, ID3D11Device4, ID3D11DeviceContext4};
-use windows::Win32::Graphics::Dxgi::{DXGI_ERROR_ACCESS_DENIED, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_INVALID_CALL, DXGI_ERROR_SESSION_DISCONNECTED, DXGI_ERROR_UNSUPPORTED, DXGI_ERROR_WAIT_TIMEOUT, IDXGIDevice4, IDXGIOutputDuplication, IDXGIResource, IDXGISurface1};
+use windows::Win32::Graphics::Dxgi::{DXGI_ERROR_ACCESS_DENIED, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_INVALID_CALL, DXGI_ERROR_SESSION_DISCONNECTED, DXGI_ERROR_UNSUPPORTED, DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_MOVE_RECT, IDXGIDevice4, IDXGIOutputDuplication, IDXGIResource, IDXGISurface1};
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Gdi::DeleteObject;
 use windows::Win32::System::StationsAndDesktops::{DESKTOP_ACCESS_FLAGS, OpenInputDesktop, SetThreadDesktop};
@@ -379,6 +380,35 @@ impl DesktopDuplicationApi {
 
         if let Some(resource) = self.state.last_resource.as_ref() {
             self.state.frame_locked = true;
+            let mut buf_size = frame_info.TotalMetadataBufferSize;
+            let count = frame_info.TotalMetadataBufferSize / size_of::<DXGI_OUTDUPL_MOVE_RECT>() as u32;
+            let mut move_rects = vec![DXGI_OUTDUPL_MOVE_RECT::default(); count as usize];
+            unsafe { dupl.GetFrameMoveRects(buf_size, move_rects.as_mut_ptr(), &mut buf_size) }.map_err(|e| {
+                error!("failed to get frame move rects. {:?}", e);
+                DDApiError::Unexpected(format!("failed to get frame move rects. {:?}", e))
+            })?;
+            move_rects.resize(buf_size as usize / size_of::<DXGI_OUTDUPL_MOVE_RECT>(), Default::default());
+            let mut buf_size = frame_info.TotalMetadataBufferSize - buf_size;
+            let count = (buf_size) / size_of::<Foundation::RECT>() as u32;
+            let mut dirty_rects = vec![Foundation::RECT::default(); count as usize];
+            unsafe { dupl.GetFrameDirtyRects(buf_size, dirty_rects.as_mut_ptr(), &mut buf_size) }.map_err(|e| {
+                error!("failed to get frame dirty rects. {:?}", e);
+                DDApiError::Unexpected(format!("failed to get frame dirty rects. {:?}", e))
+            })?;
+            dirty_rects.resize(buf_size as usize / size_of::<Foundation::RECT>(), Default::default());
+
+            self.state.dirty_rects = dirty_rects;
+            self.state.moved_rects = move_rects.iter().map(|rect|
+            {
+                let src_rect = Foundation::RECT {
+                    left: rect.SourcePoint.x,
+                    top: rect.SourcePoint.y,
+                    right: rect.SourcePoint.x + rect.DestinationRect.right - rect.DestinationRect.left,
+                    bottom: rect.SourcePoint.y + rect.DestinationRect.bottom - rect.DestinationRect.top,
+                };
+                MoveRect::new(src_rect, rect.DestinationRect)
+            }).collect();
+
             let new_frame = Texture::new(resource.cast().unwrap());
             self.ensure_cache_frame(&new_frame)?;
             unsafe { self.d3d_ctx.CopyResource(self.state.frame.as_ref().unwrap().as_raw_ref(), new_frame.as_raw_ref()); }
@@ -401,6 +431,14 @@ impl DesktopDuplicationApi {
             self.draw_cursor(&cache_cursor_frame)?
         }
         Ok(cache_cursor_frame)
+    }
+    
+    pub fn get_moved_rects(&self) -> &Vec<MoveRect> {
+        &self.state.moved_rects
+    }
+    
+    pub fn get_dirty_rects(&self) -> &Vec<Foundation::RECT> {
+        &self.state.dirty_rects
     }
 
 
@@ -576,6 +614,20 @@ pub struct DuplicationApiOptions {
     pub skip_cursor: bool,
 }
 
+#[derive(Debug)]
+pub struct MoveRect {
+    #[allow(dead_code)]
+    src: Foundation::RECT,
+    #[allow(dead_code)]
+    dest: Foundation::RECT,
+}
+
+impl MoveRect {
+    pub fn new(src: Foundation::RECT, dest: Foundation::RECT) -> Self {
+        Self { src, dest }
+    }
+}
+
 // these are state variables for duplication sync stream
 #[derive(Default)]
 struct DuplicationState {
@@ -588,6 +640,8 @@ struct DuplicationState {
     cursor: Option<HCURSOR>,
     hotspot_x: i32,
     hotspot_y: i32,
+    dirty_rects: Vec<Foundation::RECT>,
+    moved_rects: Vec<MoveRect>,
 }
 
 impl DuplicationState {
