@@ -1,20 +1,16 @@
 #![doc = include_str ! ("../README.md")]
 
+pub use duplication::*;
+pub use utils::{co_init, set_process_dpi_awareness};
+
 use crate::errors::DDApiError;
 
 pub mod devices;
-pub mod outputs;
 pub mod duplication;
-mod utils;
 pub mod errors;
-pub mod texture;
+pub mod outputs;
 pub mod tex_reader;
-
-
-
-
-pub use duplication::*;
-pub use utils::{co_init,set_process_dpi_awareness};
+pub mod texture;
+mod utils;
 
 pub type Result<T> = core::result::Result<T, DDApiError>;
-
