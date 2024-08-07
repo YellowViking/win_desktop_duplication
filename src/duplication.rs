@@ -9,6 +9,8 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use log::{debug, error, trace, warn};
+use tokio::time;
+use tokio::time::{Interval, MissedTickBehavior, sleep};
 use windows::core::Interface;
 use windows::core::Result as WinResult;
 use windows::Win32::Foundation;
@@ -58,6 +60,7 @@ mod test {
     use log::LevelFilter::Debug;
     use tokio::time::interval;
 
+    use crate::{DDApiError, DuplicationApiOptions};
     use crate::devices::AdapterFactory;
     use crate::duplication::DesktopDuplicationApi;
     use crate::outputs::DisplayMode;
@@ -93,6 +96,9 @@ mod test {
             let output = adapter.get_display_by_idx(0).unwrap();
             let mut dupl = DesktopDuplicationApi::new(adapter, output.clone()).unwrap();
             let curr_mode = output.get_current_display_mode().unwrap();
+            dupl.configure(DuplicationApiOptions {
+                skip_cursor: true
+            });
             let new_mode = DisplayMode {
                 width: 1920,
                 height: 1080,
@@ -105,6 +111,7 @@ mod test {
             let mut counter = 0;
             let mut secs = 0;
             let mut interval = interval(Duration::from_secs(1));
+            output.set_display_mode(&new_mode).unwrap();
             loop {
                 select! {
                     tex = dupl.acquire_next_vsync_frame().fuse()=>{
@@ -125,10 +132,9 @@ mod test {
                         counter = 0;
                         secs+=1;
                         if secs == 5 {
-                            println!("5 secs");
-                            output.set_display_mode(&new_mode).unwrap();
-                        } else if secs ==10 {
                             output.set_display_mode(&curr_mode).unwrap();
+                            println!("5 secs");
+                        } else if secs ==10 {
                             break;
                         }
                     }
@@ -290,20 +296,17 @@ impl DesktopDuplicationApi {
     /// drop the struct and re create a new instance.
     pub async fn acquire_next_vsync_frame(&mut self) -> Result<Texture> {
         // wait for vsync
-        if (self.vsync_stream.next().await).is_none() {
+        if (self.vsync_stream.next().await).is_some_and(|r| r.is_err()) {
             return Err(DDApiError::Unexpected(
                 "DisplayVSyncStream failed unexpectedly".to_owned(),
             ));
         }
-
         // acquire next_frame
         let res = self.acquire_next_frame_now();
         if res.is_err() {
             trace!(
                 "something went wrong with acquiring next frame. probably desktop duplication \
-            instance failed. waiting for 200ms"
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            instance failed");
         }
         res
     }
@@ -386,7 +389,6 @@ impl DesktopDuplicationApi {
     /// * [DDApiError::Unexpected] - this type of error cant be recovered from. the application should
     /// drop the struct and re create a new instance.
     pub fn acquire_next_frame_now(&mut self) -> Result<Texture> {
-        self.release_locked_frame();
         let mut frame_info = Default::default();
 
         if self.dupl.is_none() {
@@ -425,6 +427,7 @@ impl DesktopDuplicationApi {
         }
 
         if let Some(resource) = self.state.last_resource.as_ref() {
+            debug!("got fresh resource. accumulated {} frames",frame_info.AccumulatedFrames);
             self.state.frame_locked = true;
             let mut buf_size = frame_info.TotalMetadataBufferSize;
             let count =
@@ -469,31 +472,39 @@ impl DesktopDuplicationApi {
                 .collect();
 
             let new_frame = Texture::new(resource.cast().unwrap());
-            self.ensure_cache_frame(&new_frame)?;
+            self.ensure_cache_frame(&new_frame).inspect_err(|_| {
+                self.release_locked_frame();
+            })?;
             unsafe {
                 self.d3d_ctx.CopyResource(
                     self.state.frame.as_ref().unwrap().as_raw_ref(),
                     new_frame.as_raw_ref(),
                 );
             }
+            self.release_locked_frame();
+        } else {
+            debug!("no fresh resource. accumulated {} frames",frame_info.AccumulatedFrames);
         }
         if self.state.frame.is_none() {
             return Err(DDApiError::AccessLost);
         }
 
         let cache_frame = self.state.frame.clone().unwrap();
-        self.ensure_cache_cursor_frame(&cache_frame)?;
-        let cache_cursor_frame = self.state.cursor_frame.clone().unwrap();
-
-        unsafe {
-            self.d3d_ctx
-                .CopyResource(cache_cursor_frame.as_raw_ref(), cache_frame.as_raw_ref())
-        }
 
         if !self.options.skip_cursor {
-            self.draw_cursor(&cache_cursor_frame)?
+            self.ensure_cache_cursor_frame(&cache_frame)?;
+            let cache_cursor_frame = self.state.cursor_frame.clone().unwrap();
+
+            unsafe {
+                self.d3d_ctx
+                    .CopyResource(cache_cursor_frame.as_raw_ref(), cache_frame.as_raw_ref())
         }
-        Ok(cache_cursor_frame)
+
+            self.draw_cursor(&cache_cursor_frame)?;
+            Ok(cache_cursor_frame)
+        } else {
+            Ok(cache_frame)
+        }
     }
 
     pub fn get_moved_rects(&self) -> &Vec<MoveRect> {
@@ -620,12 +631,14 @@ impl DesktopDuplicationApi {
     }
 
     fn release_locked_frame(&mut self) {
-        if self.dupl.is_some() {
-            let _ = unsafe { self.dupl.as_ref().unwrap().ReleaseFrame() };
-            self.state.frame_locked = false;
-        }
         if self.state.last_resource.is_some() {
             self.state.last_resource = None;
+        }
+        if self.dupl.is_some() {
+            if self.state.frame_locked {
+                let _ = unsafe { self.dupl.as_ref().unwrap().ReleaseFrame() };
+                self.state.frame_locked = false;
+            }
         }
     }
 
